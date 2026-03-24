@@ -12,6 +12,12 @@
 
 import numpy as np
 try:
+    from scipy.signal.windows import taylor as _scipy_taylor
+    _SCIPY_TAYLOR_AVAILABLE = True
+except ImportError:
+    _SCIPY_TAYLOR_AVAILABLE = False
+
+try:
     from enum import Enum
 except ImportError:
     print("enum only exists in Python 3.4 or newer")
@@ -65,4 +71,47 @@ def windowing(input, window_type, axis=0):
         raise ValueError("The specified window is not supported!!!")
     output = input * window
     return output
+
+
+_WINDOW_CACHE = {}
+
+
+def get_window(name: str, length: int) -> np.ndarray:
+    """Return a window array of the requested type and length, with caching.
+
+    Caches previously computed windows to avoid redundant computation when the
+    same (name, length) pair is requested multiple times.
+
+    Args:
+        name (str): Window type. Supported values: ``'hamming'``, ``'hanning'``,
+            ``'blackman'``, ``'bartlett'``, ``'taylor'``, and ``'ones'`` (rectangular).
+            Unrecognised names fall back to a rectangular window.
+        length (int): Number of samples in the window.
+
+    Returns:
+        np.ndarray: 1-D window array of the requested length.
+    """
+    key = (name, length)
+    if key not in _WINDOW_CACHE:
+        if name == 'hamming':
+            _WINDOW_CACHE[key] = np.hamming(length)
+        elif name == 'hanning':
+            _WINDOW_CACHE[key] = np.hanning(length)
+        elif name == 'blackman':
+            _WINDOW_CACHE[key] = np.blackman(length)
+        elif name == 'bartlett':
+            _WINDOW_CACHE[key] = np.bartlett(length)
+        elif name == 'taylor':
+            if _SCIPY_TAYLOR_AVAILABLE:
+                try:
+                    _WINDOW_CACHE[key] = _scipy_taylor(length, nbar=3, sll=40)
+                except Exception as e:
+                    import warnings
+                    warnings.warn(f"taylor window failed ({e}); falling back to hamming")
+                    _WINDOW_CACHE[key] = np.hamming(length)
+            else:
+                _WINDOW_CACHE[key] = np.hamming(length)
+        else:
+            _WINDOW_CACHE[key] = np.ones(length)
+    return _WINDOW_CACHE[key]
 

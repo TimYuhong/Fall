@@ -13,8 +13,15 @@ import sys
 import glob
 import json
 import numpy as np
-from scipy.signal.windows import taylor, hamming
 from tqdm import tqdm
+
+# Ensure project root is on the path so dsp can be imported
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+import dsp.compensation as Compensation
+from dsp.utils import get_window
 
 # 导入配置解析器
 try:
@@ -42,26 +49,6 @@ DOPPLER_WINDOW = "hamming" # Doppler FFT 窗函数
 # IWR6843ISK 天线拓扑定义
 IDXS_AZIMUTH = np.arange(0, 8)    # 水平阵列: TX0(0-3) + TX2(4-7)
 # 垂直配对 (水平位置对齐): (2,8), (3,9), (4,10), (5,11) - 见 elevation_phase_diff()
-
-# ===================================================================
-# 窗函数缓存 (避免重复计算)
-# ===================================================================
-_WINDOW_CACHE = {}
-
-def get_window(name: str, length: int) -> np.ndarray:
-    """获取或创建窗函数"""
-    key = (name, length)
-    if key not in _WINDOW_CACHE:
-        if name == 'hamming':
-            _WINDOW_CACHE[key] = hamming(length)
-        elif name == 'taylor':
-            try:
-                _WINDOW_CACHE[key] = taylor(length, nbar=3, sll=40)
-            except:
-                _WINDOW_CACHE[key] = hamming(length)
-        else:
-            _WINDOW_CACHE[key] = np.ones(length)
-    return _WINDOW_CACHE[key]
 
 # ===================================================================
 # 核心处理函数
@@ -98,11 +85,6 @@ def doppler_fft(range_cube: np.ndarray, window_type: str = 'hamming') -> np.ndar
     cube_win = range_cube * win.reshape(1, 1, -1, 1)
     dop_fft = np.fft.fft(cube_win, axis=2).astype(np.complex64)
     return np.fft.fftshift(dop_fft, axes=2)
-
-def clutter_removal(data: np.ndarray, axis: int = 2) -> np.ndarray:
-    """静态杂波去除 (减去均值)"""
-    mean_val = np.mean(data, axis=axis, keepdims=True)
-    return data - mean_val
 
 def azimuth_fft(range_cube: np.ndarray, num_angle_bins: int = 64) -> np.ndarray:
     """
@@ -211,7 +193,7 @@ def process_single_file(cube_path: str, output_root: str) -> None:
         chunk_data = np.array(cube[:, :, :, :])  # 复制到内存
         
         range_res = range_fft(chunk_data, window_type=RANGE_WINDOW)
-        range_res = clutter_removal(range_res, axis=2)
+        range_res = Compensation.clutter_removal(range_res, axis=2)
         
         dop_res = doppler_fft(range_res, window_type=DOPPLER_WINDOW)
         rd_map = np.mean(np.abs(dop_res), axis=1).astype(np.float32)
@@ -243,7 +225,7 @@ def process_single_file(cube_path: str, output_root: str) -> None:
             
             # 处理当前块
             range_res = range_fft(chunk_data, window_type=RANGE_WINDOW)
-            range_res = clutter_removal(range_res, axis=2)
+            range_res = Compensation.clutter_removal(range_res, axis=2)
             
             dop_res = doppler_fft(range_res, window_type=DOPPLER_WINDOW)
             rd_chunk = np.mean(np.abs(dop_res), axis=1).astype(np.float32)

@@ -303,14 +303,5 @@ def clutter_removal(input_val, axis=0):
         ndarray: Array with static clutter removed.
 
     """
-    # Reorder the axes
-    reordering = np.arange(len(input_val.shape))
-    reordering[0] = axis
-    reordering[axis] = 0
-    input_val = input_val.transpose(reordering)
-
-    # Apply static clutter removal
-    mean = input_val.transpose(reordering).mean(0)
-    output_val = input_val - mean
-
-    return output_val.transpose(reordering)
+    mean = input_val.mean(axis=axis, keepdims=True)
+    return input_val - mean
