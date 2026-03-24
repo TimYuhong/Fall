@@ -1,586 +1,605 @@
 # IWR6843 实时跌倒检测与可视化系统 — 项目全景文档
 
-> **版本日期**: 2026-03-16  
-> **定位**: 基于 TI IWR6843 毫米波雷达的单人实时跌倒检测系统  
-> **核心架构**: `Radar.cfg 配置 → UDP 采集 → DSP 信号处理 → 点云聚类 → 单目标跟踪 → 规则法跌倒检测 + 可选 ML 辅助`
+> **版本日期**: 2026-03-24  
+> **定位**: 基于 TI IWR6843 毫米波雷达的单目标实时跌倒检测系统  
+> **当前主架构**: `Radar.cfg → UDP 采集 → 训练对齐 RD/RA/RE → 当前帧点云 → 单目标 Kalman 跟踪 → MLAlarmState → Fall Alert`
+
+本文档是对当前仓库的全景说明。  
+如果你只想快速上手，请先看 [README.md](README.md)。  
+如果你只关心实时主链路，请直接看 [REALTIME_FALL_DETECTION_CHAIN.md](REALTIME_FALL_DETECTION_CHAIN.md)。
 
 ---
 
 ## 目录
 
-- [30 分钟阅读指南](#30-分钟阅读指南)
-- [一、项目做了什么](#一项目做了什么)
-- [二、整体数据链条](#二整体数据链条)
-- [三、核心模块详解](#三核心模块详解)
-- [四、界面与交互](#四界面与交互)
-- [五、测试体系](#五测试体系)
-- [六、依赖与环境](#六依赖与环境)
-- [七、目录结构](#七目录结构)
-- [八、模型接入指南](#八模型接入指南)
-- [九、当前版本的边界与限制](#九当前版本的边界与限制)
-- [十、后续推荐方向](#十后续推荐方向)
+- [一、项目当前到底是什么](#一项目当前到底是什么)
+- [二、20 分钟阅读路径](#二20-分钟阅读路径)
+- [三、整体架构与数据流](#三整体架构与数据流)
+- [四、实时链路详解](#四实时链路详解)
+- [五、离线训练与部署链路](#五离线训练与部署链路)
+- [六、核心模块说明](#六核心模块说明)
+- [七、测试与环境](#七测试与环境)
+- [八、当前限制](#八当前限制)
+- [九、建议的下一步](#九建议的下一步)
 
 ---
 
-## 30 分钟阅读指南
+## 一、项目当前到底是什么
 
-如果你只有 30 分钟快速了解这个项目，按下面顺序阅读：
+这个仓库已经不再是早期那种“雷达可视化 + 规则实验 + 采样脚本混在一起”的实验工程，而是更清晰地收敛成了两条主线：
 
-| 阶段 | 时间 | 读什么 | 目标 |
-|------|------|--------|------|
-| **1. 全局感知** | 5 min | 本文档的 [一、项目做了什么](#一项目做了什么) + [二、整体数据链条](#二整体数据链条) | 理解系统边界和数据流向 |
-| **2. 配置与启动** | 3 min | `config/Radar.cfg` + `main.py` 前 100 行（import 和全局变量） | 理解运行时配置如何传递 |
-| **3. 信号处理** | 5 min | `DSP.py` 的 `RDA_Time()` 和 `Range_Angle()` 函数签名 + 返回值 | 理解 5 张热图从哪来 |
-| **4. 点云到目标** | 5 min | `pointcloud_clustering.py` 的 `cluster_pointcloud_simple()` | 理解聚类如何产生目标候选 |
-| **5. 跟踪与检测** | 5 min | `target_tracking.py` 全文（104 行）+ `fall_detection.py` 的 `detect_fall()` | 理解跟踪和跌倒判定核心逻辑 |
-| **6. ML 接口** | 3 min | `fall_predictor.py` 的 `BaseFallPredictor` / `NullFallPredictor` | 理解模型如何挂载 |
-| **7. 主循环** | 4 min | `main.py` 的 `update_figure()` 函数中 `# 单目标稳定跟踪` 和 `# 高度检测` 注释段 | 理解一次刷新做了哪些事 |
+1. **实时主线**
+   - 用 `config/Radar.cfg` 驱动运行时参数
+   - 从实时雷达流中提取训练对齐的 `RD / RA / RE`
+   - 从当前帧点云提主目标，再用单目标 Kalman Filter 跟踪
+   - 由 `runtime/ml_alarm.py` 维护的 ML 告警状态机决定最终 `Fall Alert`
 
-> **提示**: 带着 "一帧雷达数据从进来到最终在界面上显示跌倒告警经历了什么？" 这个问题去读，效率最高。
+2. **离线主线**
+   - 从 `.bin` 生成 JSONL 标注
+   - 提取离线 `RD / RA / RE / PC`
+   - 构建训练 manifest
+   - 训练 RACA 模型
+   - 打包模型与 `model_meta.json`
+   - 回挂到实时 GUI
+
+### 当前能力概览
+
+| 能力 | 当前状态 | 备注 |
+| --- | --- | --- |
+| `Radar.cfg` 运行时配置化 | 已实现 | `config/Radar.cfg` 是当前配置真源 |
+| 实时 UDP 采集与帧重组 | 已实现 | 依赖 `libs/UDPCAPTUREADCRAWDATA.dll` |
+| 训练对齐 `RD / RA / RE` 实时特征链 | 已实现 | 实时与离线共用 `runtime/aligned_features.py` |
+| 当前帧点云提取 + DBSCAN 聚类 | 已实现 | 聚类参数来自 UI |
+| 单目标 Kalman 跟踪 | 已实现 | 支持稳定锁存、短暂预测、近距重锁 |
+| ML 主导的实时跌倒告警 | 已实现 | 由 `runtime/ml_alarm.py` 决定 |
+| 模型加载 `.pth / .pt / .jit / .ts / .py` | 已实现 | 支持 RACA checkpoint 与插件 |
+| `model_meta.json` 契约校验 | 已实现 | 与 `Radar.cfg` 绑定 |
+| 离线 `.bin -> 特征 -> 训练 -> 打包` | 已实现 | 已形成闭环 |
+| GUI 中真实 `.bin` 回放 | 未实现 | 当前仍为占位接口 |
+
+### 需要特别澄清的三点
+
+1. **实时正式告警已经不是规则法主导**
+   - 当前真正触发 `_show_fall_alert()` 的主链是：  
+     `模型推理 -> MLAlarmState -> Fall Alert`
+
+2. **`.pth` 已经可以直接加载**
+   - 这和较早版本说明不同
+   - 当前 `.pth` 会走 `runtime.raca_predictor.RACAfallPredictor`
+
+3. **雷达启动后会自动进入监测态**
+   - 不再要求用户每次再手动把首页长期从 `Standby` 切出来
 
 ---
 
-## 一、项目做了什么
+## 二、20 分钟阅读路径
 
-### 已实现的核心能力
+如果你想快速理解这个项目，推荐这样读：
 
-| 能力 | 状态 | 关键模块 |
-|------|------|----------|
-| `Radar.cfg` 运行时配置解析 | ✅ 完整 | `iwr6843_tlv/detected_points.py`, `main.py` |
-| 实时 UDP 数据采集与帧重组 | ✅ 完整 | `real_time_process.py` |
-| DSP 信号处理（RTI/DTI/RDI/RAI/REI） | ✅ 完整 | `DSP.py` |
-| 3D 点云提取与 DBSCAN 聚类 | ✅ 完整 | `DSP.py`, `pointcloud_clustering.py` |
-| 单目标帧间稳定跟踪 | ✅ 完整 | `target_tracking.py` |
-| 统一高度序列（显示与检测共用） | ✅ 完整 | `fall_detection.py`, `main.py` |
-| 规则法跌倒检测（多特征融合，唯一策略） | ✅ 完整 | `fall_detection.py` |
-| 跌倒状态面板实时驱动 | ✅ 完整 | `main.py` |
-| 可选 Torch 模型辅助推理接口 | ✅ 完整 | `fall_predictor.py` |
-| **离线特征提取器 (DSP 复用)** | ✅ 完整 | `offline_feature_extractor.py` |
-| 多页签可视化 GUI | ✅ 完整 | `UI_interface.py`, `main.py` |
-| `.bin` 回放接口 | 🔶 仅预留 | `replay_controller.py` |
+| 阶段 | 时间 | 阅读位置 | 目标 |
+| --- | --- | --- | --- |
+| 1 | 3 min | 本文档的 [三、整体架构与数据流](#三整体架构与数据流) | 建立全局图 |
+| 2 | 4 min | [README.md](README.md) | 先抓住当前能力边界 |
+| 3 | 5 min | `main.py` 开头、`_build_runtime_workers()`、`_consume_ml_feature_frames()` | 理解实时编排 |
+| 4 | 3 min | `real_time_process.py` + `runtime/aligned_features.py` | 理解实时特征从哪来 |
+| 5 | 3 min | `runtime/target_tracking.py` | 理解目标如何稳定 |
+| 6 | 2 min | `runtime/ml_alarm.py` | 理解正式告警如何触发 |
 
-### 设计原则
+如果你是为了训练模型并上线：
 
-1. **单人优先** — 跟踪器按单目标设计，不保证多人场景
-2. **规则法主判** — 正式报警由规则法触发，ML 结果仅作辅助显示
-3. **显示 = 检测** — 高度曲线和跌倒判定使用完全相同的 `height_history`
-4. **失锁即重置** — 目标跟踪丢失时自动清空历史，杜绝误拼跌倒事件
+1. 先看 [README.md](README.md) 里的离线流程
+2. 再看 `offline/feature_extractor.py`
+3. 再看 `training/train_v2.py`
+4. 最后看 `training/export_model.py`
 
 ---
 
-## 二、整体数据链条
+## 三、整体架构与数据流
 
 ### 全局数据流
 
-```
-┌──────────────┐     串口 cfg      ┌─────────────┐
-│  Radar.cfg   │ ─────────────────→│  IWR6843    │
-│  (配置真源)   │                   │  雷达硬件    │
-└──────────────┘                   └──────┬──────┘
-                                          │ UDP 原始 ADC
-                                          ▼
-┌──────────────────────────────────────────────────────┐
-│                  real_time_process.py                 │
-│  ┌──────────────┐        ┌──────────────────────┐    │
-│  │ UdpListener  │──Raw──→│ DataProcessor        │    │
-│  │ (采集线程)    │  Data  │ (处理线程)            │    │
-│  └──────────────┘        └──────────┬───────────┘    │
-└─────────────────────────────────────┼────────────────┘
-                                      │ 调用 DSP
-                                      ▼
-┌──────────────────────────────────────────────────────┐
-│                      DSP.py                          │
-│                                                      │
-│  RDA_Time() → RTI, DTI, RDI                          │
-│  Range_Angle() → RAI, REI                            │
-│  extract_pointcloud_from_angle_maps() → 3D 点云       │
-│                                                      │
-│  产出 → 6 个 Queue:                                   │
-│  RTIData, DTIData, RDIData, RAIData, REIData,        │
-│  PointCloudData                                      │
-└──────────────────────┬───────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────┐
-│              main.py  update_figure()                │
-│                                                      │
-│  ① 刷新 5 张热图 (RTI/DTI/RDI/RAI/REI)               │
-│  ② 合并点云历史 → 时间衰减显示                          │
-│  ③ DBSCAN 聚类 → 候选目标中心列表                      │
-│  ④ target_tracking.update_tracker() → 锁定主目标      │
-│  ⑤ 主目标高度 → fd.update_height_history()            │
-│  ⑥ fd.detect_fall() → 规则法跌倒判定                  │
-│  ⑦ fall_predictor.predict() → ML 辅助推理 (200ms 节流) │
-│  ⑧ 状态面板更新 (Standby/Tracking/No Target/          │
-│     Fall Alert/Sample Saved)                         │
-│                                                      │
-│  刷新周期: QTimer.singleShot(1ms)                     │
-└──────────────────────────────────────────────────────┘
+```text
+Radar.cfg
+   ↓
+main.py 解析运行时参数
+   ↓
+UdpListener + DataProcessor
+   ↓
+runtime.aligned_features.extract_training_aligned_frame_features()
+   ↓
+RD / RA / RE
+   ├─→ MLFeatureData 队列 → 模型推理 → MLAlarmState → Fall Alert
+   └─→ 当前帧点云提取 → DBSCAN 聚类 → 单目标 Kalman 跟踪
 ```
 
-### 跌倒检测子链（步骤 ③→⑥ 展开）
+### 启动阶段做了什么
 
-```
-点云帧 [N×4: range, x, y, z]
-        │
-        ▼
-   DBSCAN 聚类 (eps=0.3, min_samples=2)
-        │
-        ▼
-   按能量降序排列的候选中心列表
-        │
-        ▼
-   ┌────────────────────────────────┐
-   │  target_tracking.update_tracker│
-   │  ─ 已锁定? 找距离最近候选       │
-   │  ─ 距离 ≤ gate_m? → tracked    │
-   │  ─ 超限? → lost (清 history)   │
-   │  ─ 首帧/重锁 → locked/relocked │
-   └──────────┬─────────────────────┘
-              │ 主目标 (x, y, z, range)
-              ▼
-   fd.update_height_history()
-   ─ 逐点异常检测 (IQR + 中位数替换)
-   ─ 追加到 height_history
-              │
-              ▼
-   fd.detect_fall(height_history, settings, current_time)
-   ─ 取时间窗口内的近期点
-   ─ 计算: 高度下降、下降速度、加速度、低姿态持续时间
-   ─ 8 项条件投票，满足 ≥ min_conditions → 报警
-              │
-              ▼
-   ┌──────────────────┐
-   │  detected: True  │──→ _show_fall_alert() + 状态面板 "Fall Alert"
-   │  detected: False │──→ 状态面板 "Tracking" 或 "No Target"
-   └──────────────────┘
+当前 `main.py` 的启动关键步骤可以概括为：
+
+1. 读取当前 UI 选择的 `cfg / CLI / Data port`
+2. 解析并应用 `Radar.cfg`
+3. 构建实时 worker：
+   - `UdpListener`
+   - `DataProcessor`
+4. 发送配置并启动雷达
+5. 启动刷新循环
+6. 调用 `_set_monitor_enabled(True)` 自动进入监测态
+
+### 当前主配置真源
+
+当前仓库明确把：
+
+```text
+config/Radar.cfg
 ```
 
-### 右侧状态面板状态机
+作为实时和离线都尽量要对齐的配置真源。
 
-```
-                  monitor_button
-                   未按下
-    ┌─────────────────────────────────┐
-    │           Standby               │ ← 默认状态
-    └─────────┬───────────────────────┘
-              │ monitor_button 按下
-              ▼
-    ┌─────────────────────────────────┐
-    │  tracked_target_state.locked?   │
-    │  ├─ True  → "Tracking"         │
-    │  └─ False → "No Target"        │
-    └─────────┬───────────────────────┘
-              │ detect_fall → detected
-              ▼
-    ┌─────────────────────────────────┐
-    │        "Fall Alert"             │
-    │  ├─ Event Snapshot 模式?        │
-    │  │  └─ 自动保存特征快照         │
-    │  │     → "Sample Saved"         │
-    │  └─ 否 → 等待警报冷却 (3s)     │
-    └─────────────────────────────────┘
-```
+这份 cfg 会影响：
+
+- `num_range_bins`
+- `num_doppler_bins`
+- `frame_length`
+- `frame_periodicity_ms`
+- 角度分辨率与角度 bins
+
+所以它不仅影响实时 DSP，也直接影响训练输入 shape 和 `model_meta.json` 契约。
 
 ---
 
-## 三、核心模块详解
+## 四、实时链路详解
 
-### `main.py` — 主界面与业务编排（~2000 行）
+### 1. 实时特征链
 
-系统入口，承担全部编排职责：
+当前实时处理已经和训练特征对齐。
 
-- **配置链**: 解析 `Radar.cfg` → 生成 `runtime_cfg` → 同步给 UI / 采集 / DSP
-- **采集链**: 启动 `UdpListener` + `DataProcessor` 线程
-- **刷新循环**: `update_figure()` 以 ~1ms 周期执行热图刷新、点云显示、目标跟踪、跌倒检测、ML 推理、面板更新
-- **GUI 布局**: 5 个 Tab（实时热图、NLOS 定位、点云、轨迹、高度检测）
-
-关键全局变量：
-
-| 变量 | 用途 |
-|------|------|
-| `tracked_target_state` | 单目标跟踪器当前状态 (`TrackerState`) |
-| `height_history` | 高度历史序列 `[(timestamp, z, y, range), ...]` |
-| `last_fall_detection_result` | 最近一次跌倒检测结果 |
-| `_fall_predictor` | ML 预测器实例 (默认 `NullFallPredictor`) |
-| `_last_ml_prediction` | 最近一次 ML 推理结果 |
-
----
-
-### `DSP.py` — 雷达数字信号处理（~505 行）
-
-两个核心函数：
-
-| 函数 | 产出 |
-|------|------|
-| `RDA_Time(data, ...)` | RTI (时间-距离), DTI (多普勒-时间), RDI (距离-多普勒) |
-| `Range_Angle(data, ...)` | RAI (距离-方位角), REI (距离-俯仰角) |
-| `extract_pointcloud_from_angle_maps(RAI, REI, ...)` | 3D 点云 `[N, 4]` → `[range, x, y, z]` |
-
-内部维护了 RTI/RDI/RAI/REI 的帧级滑窗队列，用于生成时间维度特征。
-
----
-
-### `target_tracking.py` — 单目标跟踪器（104 行）
-
-纯函数式设计，无副作用的状态机：
+`real_time_process.DataProcessor` 对每一帧调用：
 
 ```python
-TrackerState(locked, position, last_update_ms, miss_count)
-
-update_tracker(state, candidates, current_time, gate_m, max_miss, timeout_ms)
-    → (new_state, event)
-    # event ∈ {"idle", "locked", "tracked", "relocked", "lost"}
+runtime.aligned_features.extract_training_aligned_frame_features(...)
 ```
 
-跟踪策略：
-- **首次锁定**: 取候选列表第一个（最高能量）
-- **连续跟踪**: 在所有候选中找欧氏距离最近的，距离 ≤ `gate_m` 则关联
-- **丢帧容忍**: `miss_count` 超过 `max_miss` 或时间超过 `timeout_ms` → 失锁
-- **失锁重置**: 发生 `lost` 或 `relocked` 时，`main.py` 会清空 `height_history`
+直接得到：
 
----
+- `RD`
+- `RA`
+- `RE`
 
-### `fall_detection.py` — 跌倒检测算法（~273 行）
+然后：
 
-两个公开函数：
+- `RD / RA / RE` 进入 `MLFeatureData`
+- `RA / RE` 同时用于当前帧点云提取
 
-| 函数 | 用途 |
-|------|------|
-| `update_height_history(history, sample, max_history)` | 追加新样本，自动做逐点异常检测和中位数替换 |
-| `detect_fall(history, settings, current_time_ms)` | 基于 8 项特征条件的投票式跌倒判定 |
+这意味着当前主链路不再依赖旧版显示专用的那套“先算热图、再从显示图回推逻辑”的路径。
 
-**检测条件（8 项投票）**：
+### 2. 点云与聚类
 
-| 条件 | 含义 |
-|------|------|
-| `height_drop` | 高度下降量 ≥ 阈值 |
-| `velocity` | 下降速度 > 阈值 |
-| `acceleration` | 加速度 > 阈值 |
-| `final_height` | 终止高度 < 低姿态阈值 |
-| `height_window` | 最大高度在合理窗口内 |
-| `max_height_positive` | 最大高度 > 0（人在站立） |
-| `min_height_low` | 最小高度足够低 |
-| `low_duration` | 低姿态持续时间 > 阈值 |
+当前主目标候选来自**当前帧点云**，不是历史融合点云。
 
-灵敏度等级（`灵敏`/`中等`/`不灵敏`）控制每项阈值的具体数值和最低满足条件数。
+流程是：
 
----
+1. 从当前帧 `RA / RE` 直接提点云
+2. 按当前 UI 的 `eps / min_samples` 做 `DBSCAN`
+3. 过滤点数不足或距离过近的簇
+4. 按簇能量排序
+5. 生成候选目标中心送给 tracker
 
-### `fall_predictor.py` — ML/DL 模型接口（157 行）
+### 3. 单目标 Kalman 跟踪
 
-```python
-FallFeatureClip      # 一帧同步特征快照：RT/DT/RDT/ART/ERT + height_history + tracked_target_state
-FallPrediction       # 预测结果：available, label, score, probability, topk, metadata
+当前 tracker 位于：
 
-BaseFallPredictor    # 基类接口
-NullFallPredictor    # 默认空实现（不做推理）
-TorchModuleFallPredictor  # 可选 Torch 包装器
-
-build_fall_predictor()    # 工厂函数，默认返回 NullFallPredictor
+```text
+runtime/target_tracking.py
 ```
 
-**设计要点**：
-- `torch` 是 lazy import，不安装 Torch 也能正常运行
-- ML 推理在 `update_figure()` 中以 200ms 间隔节流执行
-- 预测结果只写入面板附加文本和日志，**不接管规则法报警**
+核心特征：
+
+- 单目标
+- 常速度 Kalman Filter
+- 状态向量：`[x, y, z, vx, vy, vz]`
+- 观测向量：`[x, y, z]`
+- 支持事件：
+  - `idle`
+  - `locked`
+  - `tracked`
+  - `predicted`
+  - `relocked`
+  - `lost`
+
+当前实时主链依赖的几个默认门限：
+
+- `stable_hits = 2`
+- `max_miss = 2`
+- `timeout_ms = 2000`
+- `relock_grace_ms = 1000`
+- `relock_distance_m = 0.6`
+
+### 4. 实时告警现在由谁决定
+
+当前正式告警由：
+
+```text
+runtime/ml_alarm.py
+```
+
+中的 `MLAlarmState` 决定。
+
+它会综合考虑：
+
+- 监测是否开启
+- 模型是否已加载
+- 模型契约是否通过校验
+- 当前推理是否为 `fall`
+- 概率是否超过阈值
+- 连续阳性次数是否达到要求
+- tracker 是否已进入稳定门控
+- 当前是否 lagging
+
+### 5. `Standby`、`No Target`、`Tracking` 现在是什么意思
+
+首页主状态现在更接近“监测状态 + 目标状态 + ML 状态”的组合，而不是单纯规则法状态。
+
+主要状态含义：
+
+- `Standby`
+  - 监测未开启
+  - 或雷达未启动/启动失败
+- `No Target`
+  - 已开启监测，但没有可用目标
+- `Target Warmup`
+  - 有锁定目标，但还没达到稳定门控
+- `Tracking`
+  - 已有稳定目标
+- `Fall Alert`
+  - ML 告警状态机正式确认跌倒
+
+如果模型没有加载，或契约校验失败，页面不会自动退回 `Standby`，而是会在状态卡/技术摘要里显示：
+
+```text
+ML disabled
+```
+
+### 6. 规则法模块当前还在做什么
+
+`runtime/fall_detection.py` 仍然保留在仓库里，但当前定位更偏向：
+
+- 历史算法保留
+- 高度序列辅助
+- 调试和对照分析
+
+它已经不再是实时正式告警的主入口。
+
+换句话说：
+
+- 规则法还“在仓库里”
+- 但当前正式跌倒提示不是靠它触发
 
 ---
 
-### `pointcloud_clustering.py` — 点云聚类（342 行）
+## 五、离线训练与部署链路
 
-提供两种 DBSCAN 聚类模式：
+当前仓库已经具备一条比较完整的离线闭环：
 
-| 函数 | 特点 |
-|------|------|
-| `cluster_pointcloud_simple(points, eps, min_samples)` | 仅用空间坐标 (x,y,z) |
-| `cluster_pointcloud(points, eps, min_samples)` | 空间 + 信号强度联合聚类 |
+```text
+.bin
+  ↓
+training.generate_label_template / training.split_adl5min
+  ↓
+offline.feature_extractor
+  ↓
+training.build_manifest
+  ↓
+training.train_v2
+  ↓
+training.export_model
+  ↓
+实时 GUI 加载
+```
 
-当前 `main.py` 使用 `DBSCAN(eps=0.3, min_samples=2)` 做空间聚类。
+### 1. 生成标注模板
+
+适用脚本：
+
+- `training/generate_label_template.py`
+- `training/split_adl5min.py`
+
+前者适合标准命名的原始 `.bin` 文件，后者适合 `ADL_5min` 这种跨多个 `Raw_N.bin` 的长时非跌倒数据。
+
+### 2. 提取离线特征
+
+适用脚本：
+
+```text
+offline/feature_extractor.py
+```
+
+输出标准目录：
+
+```text
+features/<label>/<clip_id>/
+├─ RD.npy
+├─ RA.npy
+├─ RE.npy
+├─ PC.npy
+└─ meta.json
+```
+
+这里最重要的是：离线提取和实时推理共用同一套 `runtime/aligned_features.py` 契约。
+
+### 3. 构建训练 manifest
+
+适用脚本：
+
+```text
+training/build_manifest.py
+```
+
+它会扫描已提取的样本目录，生成训练用 `JSONL`。
+
+### 4. 训练模型
+
+当前更推荐的训练入口：
+
+```text
+training/train_v2.py
+```
+
+当前项目更偏向下面这套配置：
+
+- `fall` vs `non-fall` 二分类
+- 小数据量时优先 `LSTM`
+- `RE` 分支对 IWR6843ISK 建议降权
+
+默认训练产物通常会包含：
+
+- `raca_v2_best.pth`
+- `raca_v2_last.pth`
+- `history.json`
+- `training_curves.png`
+- `confusion_matrix.png`
+- `test_report.txt`
+
+### 5. 打包模型给实时程序
+
+适用脚本：
+
+```text
+training/export_model.py
+```
+
+这个步骤会：
+
+- 复制模型文件
+- 生成 `model_meta.json`
+- 记录 `cfg_sha256`
+- 记录 `clip_frames`
+- 记录 `frame_periodicity_ms`
+- 记录 `feature_shapes`
+
+### 6. 为什么 `model_meta.json` 很重要
+
+运行时加载模型后，`runtime/fall_predictor.py` 会做契约校验。
+
+它会检查：
+
+- 当前运行时 `cfg`
+- 模型声明的 `feature_shapes`
+- `clip_frames`
+- `frame_periodicity_ms`
+- `cfg_sha256`
+
+如果不一致，当前实时程序会显示：
+
+```text
+ML disabled: cfg mismatch
+```
+
+这也是为什么训练、打包、部署必须尽量使用同一份 `Radar.cfg`。
 
 ---
 
-### `real_time_process.py` — 数据采集与处理线程（~162 行）
+## 六、核心模块说明
 
-| 类 | 职责 |
-|------|------|
-| `UdpListener` | 后台线程，通过 UDP 接收原始 ADC 数据，放入 `BinData` 队列 |
-| `DataProcessor` | 后台线程，从 `BinData` 取数据，调用 `DSP.RDA_Time()` / `DSP.Range_Angle()` / `DSP.extract_pointcloud_from_angle_maps()`，结果放入 6 个 Queue |
+### `main.py`
+
+项目主入口与总编排层，负责：
+
+- 启动 Qt 界面
+- 解析并应用 `Radar.cfg`
+- 构建实时 worker
+- 刷新热图和状态板
+- 消费 `MLFeatureData`
+- 驱动 `MLAlarmState`
+- 管理模型加载、回放入口与状态显示
+
+### `real_time_process.py`
+
+实时采集与处理线程层，包含：
+
+- `UdpListener`
+- `DataProcessor`
+
+当前 `DataProcessor` 的关键职责是：
+
+- 从 DLL 缓冲区读取原始 IQ
+- 还原一帧复数雷达数据
+- 提取训练对齐的 `RD / RA / RE`
+- 生成当前帧点云
+- 把结果送入队列
+
+### `runtime/aligned_features.py`
+
+这是实时与离线共用的特征契约中心。
+
+它定义了：
+
+- 角度 bins 如何根据 cfg 计算
+- 训练时的特征 shape
+- 单帧 `RD / RA / RE` 的提取方式
+
+### `runtime/target_tracking.py`
+
+单目标 Kalman Filter 跟踪器。
+
+它负责：
+
+- 首次锁定
+- 连续跟踪
+- 预测态保持
+- 失锁判定
+- 近距重锁继承
+
+### `runtime/ml_alarm.py`
+
+正式告警状态机。
+
+它负责：
+
+- ML 是否启用
+- 连续阳性计数
+- threshold / required_streak
+- tracker_ready 门控
+- lagging 与 error 状态
+
+### `runtime/fall_predictor.py`
+
+模型加载与契约校验总入口。
+
+当前支持：
+
+- `.py` 插件
+- `.pt / .jit / .ts`
+- `.pth`
+
+同时也负责：
+
+- 自动发现默认模型
+- 读取 `model_meta.json`
+- 校验 `cfg_sha256`
+
+### `runtime/raca_predictor.py`
+
+RACA checkpoint 的实时适配器。
+
+当前默认使用：
+
+- `window = 100`
+- `stride = 10`
+
+### `offline/feature_extractor.py`
+
+离线特征提取器。
+
+职责是：
+
+- 解析 `.bin`
+- 复用 cfg
+- 生成 `RD / RA / RE / PC`
+- 写出 `meta.json`
+
+### `training/*.py`
+
+训练相关辅助脚本主要包括：
+
+- `generate_label_template.py`
+- `split_adl5min.py`
+- `build_manifest.py`
+- `train_v2.py`
+- `export_model.py`
+
+### `runtime/replay_controller.py`
+
+当前还是回放占位接口。
+
+已实现：
+
+- `.bin` 文件选择与登记
+- 基本文件合法性检查
+
+未实现：
+
+- `.bin` 真正流式解析
+- 回放驱动实时 GUI
 
 ---
 
-### `radar_config.py` — 雷达控制
+## 七、测试与环境
 
-- `SerialConfig`: 通过串口发送 cfg 到雷达，控制雷达启停
-- `DCA1000Config`: 配置 DCA1000 EVM 的 UDP 地址/端口
+### 测试入口
 
----
-
-### `UI_interface.py` — GUI 界面定义（~1161 行）
-
-PyQt5 界面定义，包含 5 个 Tab：
-
-| Tab | 内容 |
-|------|------|
-| real-time system | 5 张热图 + 右侧控制面板（跌倒工作流 + 雷达配置 + 状态面板） |
-| NLOS Localization | 预留 |
-| 点云显示 | 3D 点云可视化 + 配置面板 |
-| 目标运动轨迹 | 2D XY 轨迹图 |
-| 高度检测 | 2D ZY 高度图 + 跌倒检测参数 + 跌倒告警标签 |
-
----
-
-### `offline_feature_extractor.py` — 离线特征提取标准化 [NEW]
-
-专门用于离线的训练数据准备，通过复用 `DSP.py` 确保特征语义与实时系统完全一致：
-
-- **配置对齐**: 自动调用 `DSP.apply_runtime_config()`，确保 FFT 尺寸、分辨率等参数一致。
-- **帧解码对齐**: 复制并封装了实时系统的原始字节解析逻辑。
-- **状态对齐**: 实现了 12 帧的预热机制（Warmup），确保离线提取的累积特征（如堆叠热图）与实时运行状态一致。
-- **数据输出**: 支持单帧生成器或批量保存为 `.npy` 目录结构。
-
-### `replay_controller.py` — 回放接口预留（77 行）
-
-仅定义了 `ReplayLoadResult` / `BaseReplaySource` / `NullReplaySource` / `ReservedBinReplaySource` 和校验逻辑，**尚未实现真正的 `.bin` 解析与回放播放**。
-
----
-
-### 辅助模块
-
-| 模块 | 职责 |
-|------|------|
-| `globalvar.py` | 全局变量字典（`set_value` / `get_value`），用于跨模块状态共享 |
-| `colortrans.py` | Matplotlib colormap → pyqtgraph colormap 转换 |
-| `iwr6843_tlv/detected_points.py` | cfg 文件解析与运行参数提取 |
-
----
-
-## 四、界面与交互
-
-### 启动方式
+当前建议的基础测试命令：
 
 ```powershell
-python main.py
-```
-
-### 操作流程
-
-```
-1. 确认串口 → 选择 cfg → 点击 "send"
-   ↓
-2. 雷达启动，热图开始刷新
-   ↓
-3. 切换到 "点云显示" / "目标运动轨迹" / "高度检测" 页签观察
-   ↓
-4. 在右侧面板点击 "monitor" 按钮开始实时监测
-   ↓
-5. "高度检测" 页签中确认 "启用跌倒检测" 已勾选
-   ↓
-6. 系统进入实时跌倒监测状态，面板显示 Tracking / No Target
-   ↓
-7. 若检测到跌倒 → 面板显示 "Fall Alert" + 蜂鸣 + 大字提示
-```
-
-### 跌倒检测灵敏度调节
-
-在 "高度检测" 页签右侧可选择灵敏度等级：
-
-| 等级 | 效果 |
-|------|------|
-| `灵敏` | 较低阈值，更容易触发报警，适合灵敏场景 |
-| `中等` | 平衡设置，推荐日常使用 |
-| `不灵敏` | 较高阈值，减少误报，适合嘈杂环境 |
-
----
-
-## 五、测试体系
-
-```
-tests/
-├── test_cfg_runtime.py        (4 tests) — cfg 解析与运行参数提取
-├── test_fall_detection.py     (5 tests) — 跌倒检测规则法（稳定站立/明显跌倒/缓慢下蹲）
-├── test_fall_predictor.py     (2 tests) — ML 接口 NullFallPredictor 行为
-├── test_target_tracking.py    (4 tests) — 跟踪器锁定/跟踪/丢失/重锁
-└── test_replay_controller.py  — 回放接口占位
-```
-
-运行方式：
-
-```powershell
-# pytest（推荐）
-python -m pytest tests/ -v
-
-# 或 unittest
 python -m unittest discover -s tests -v
 ```
 
-当前测试结果：**15 passed**
+覆盖方向主要包括：
+
+- cfg 运行时解析
+- 实时特征与处理线程
+- tracker
+- ML alarm
+- predictor 加载与契约
+- offline extractor
+- export model
+- replay placeholder
+
+### 运行环境
+
+推荐：
+
+- Python `3.10`
+- Windows
+- 已安装 `requirements.txt` 中依赖
+
+实时链还依赖：
+
+- `libs/UDPCAPTUREADCRAWDATA.dll`
+- TI IWR6843
+- DCA1000
 
 ---
 
-## 六、依赖与环境
-
-**Python**: 3.10+ 推荐（当前测试环境 3.12.7）
-
-**核心依赖** (`requirements.txt`):
-
-| 包 | 版本 | 用途 |
-|------|------|------|
-| `PyQt5` | ≥ 5.15 | GUI 框架 |
-| `pyqtgraph` | ≥ 0.12 | 热图 / 2D / 3D 可视化 |
-| `numpy` | ≥ 1.19 | 数值计算 |
-| `torch` | ≥ 1.7 | ML 模型推理（可选，不安装不影响主功能） |
-| `matplotlib` | ≥ 3.3 | Colormap 支持 |
-| `pyserial` | ≥ 3.5 | 串口通信 |
-| `scikit-learn` | ≥ 0.24 | DBSCAN 聚类 |
-| `joblib` | ≥ 1.0 | 并行计算支持 |
-
-安装：
-
-```powershell
-pip install -r requirements.txt
-```
-
----
-
-## 七、目录结构
-
-```
-iwr6843-points-visual-main/
-│
-├── main.py                    # 主程序入口、业务编排
-├── DSP.py                     # 雷达 DSP 信号处理
-├── real_time_process.py       # UDP 数据采集与处理线程
-├── radar_config.py            # 雷达串口控制
-│
-├── fall_detection.py          # 规则法跌倒检测算法
-├── target_tracking.py         # 单目标帧间跟踪器
-├── fall_predictor.py          # ML/DL 模型预测接口
-│
-├── pointcloud_clustering.py   # 点云 DBSCAN 聚类
-├── UI_interface.py            # PyQt5 界面定义
-├── colortrans.py              # Colormap 转换工具
-├── globalvar.py               # 全局变量管理
-├── replay_controller.py       # 离线回放接口预留
-├── offline_feature_extractor.py # 离线特征提取器
-│
-├── requirements.txt           # Python 依赖
-├── README.md                  # 旧版文档（含离线训练指南）
-├── PROJECT_DOC.md             # 本文档
-│
-├── config/
-│   └── Radar.cfg              # 雷达运行时配置（唯一配置真源）
-│
-├── iwr6843_tlv/
-│   └── detected_points.py     # cfg 解析与参数提取
-│
-├── tests/
-│   ├── test_cfg_runtime.py
-│   ├── test_fall_detection.py
-│   ├── test_fall_predictor.py
-│   ├── test_target_tracking.py
-│   └── test_replay_controller.py
-│
-├── dsp/                       # DSP 辅助资源
-├── dataset/                   # 数据集目录
-├── firmware/                  # 固件文件
-├── img/                       # 图像资源
-└── libs/                      # 第三方库
-```
-
----
-
-## 八、模型接入指南
-
-### 当前 ML 接口的运行方式
-
-```
-update_figure() 每帧执行
-    │
-    ├─ 规则法 detect_fall() → 跌倒判定 ✓ 正式报警
-    │
-    └─ 200ms 节流 → _fall_predictor.predict(clip) → 辅助结果
-                     │
-                     ├─ NullFallPredictor（默认）→ available=False，无输出
-                     └─ TorchModuleFallPredictor（接入模型后）→ 面板附加显示
-```
-
-### 接入自定义模型最简示例
-
-```python
-# my_predictor.py
-from fall_predictor import BaseFallPredictor, FallPrediction, FallFeatureClip
-
-class MyFallPredictor(BaseFallPredictor):
-    def __init__(self):
-        import torch
-        self.model = torch.jit.load('my_model.pt')
-        self.model.eval()
-
-    def predict(self, clip: FallFeatureClip) -> FallPrediction:
-        import torch, numpy as np
-        # 取你需要的特征
-        heights = np.array([h[1] for h in clip.height_history], dtype=np.float32)
-        x = torch.from_numpy(heights).unsqueeze(0)
-        with torch.no_grad():
-            out = self.model(x)
-        prob = float(torch.sigmoid(out).item())
-        return FallPrediction(
-            available=True,
-            label='fall' if prob > 0.5 else 'non-fall',
-            score=prob,
-            probability=prob,
-        )
-
-    def reset(self):
-        pass
-
-def build_fall_predictor():
-    return MyFallPredictor()
-```
-
-### 三、推荐的离线训练链条
-
-推荐你按下面这条线组织离线流程：
-
-1.  **读取 `.bin`**：通过 `offline_feature_extractor.py` 进行解析。
-2.  **生成特征**：复用当前项目的 `DSP.py` 逻辑（由提取器自动处理）。
-3.  **输出特征**：保存为 `.npy` 片段。
-4.  **组装与训练**：进行模型训练与导出。
-5.  **挂回实时窗口**：在主界面加载导出的模型。
-
-### 离线训练建议的特征对齐
-
-离线训练时应使用与实时系统相同的 `Radar.cfg`，确保以下特征的 shape 和物理含义一致：
-
-| 特征 | 来源 | 备注 |
-|------|------|------|
-| RT | `RTIData` 时间-距离 | shape 依赖 cfg 中 ADC samples 和帧数 |
-| DT | `DTIData` 多普勒-时间 | |
-| RDT | `RDIData` 距离-多普勒 | |
-| ART | `RAIData` 距离-方位角 | |
-| ERT | `REIData` 距离-俯仰角 | |
-| `height_history` | 主目标高度序列 | `[(timestamp_ms, z, y, range), ...]` |
-
----
-
-## 九、当前版本的边界与限制
+## 八、当前限制
 
 | 限制 | 说明 |
-|------|------|
-| 单人场景 | 跟踪器按单目标设计，多人场景可能目标跳变 |
-| 规则法主导 | ML 推理不参与正式报警决策 |
-| 回放未实现 | `.bin` 回放仅完成接口预留 |
-| GUI 线程推理 | ML 推理在主线程执行，复杂模型可能造成卡顿 |
-| 高度精度受限 | 受 DBSCAN 聚类精度和雷达分辨率影响 |
+| --- | --- |
+| 单目标优先 | 当前 tracker 不是多目标方案 |
+| 回放未接通 | `.bin` 回放还只是占位 |
+| 模型契约严格 | cfg 或 feature shape 不一致会被禁用 |
+| TorchScript 适配器偏通用 | 复杂输入更适合 `.py` 插件或 `.pth + RACA` |
+| GUI 运行仍偏重实时现场使用 | 不是一个独立的训练平台 |
 
 ---
 
-## 十、后续推荐方向
+## 九、建议的下一步
 
-1. **.bin 回放链完成** — 让离线数据能通过 `replay_controller.py` 驱动整条 DSP 链
-2. **离线特征提取标准化** — 复用 `DSP.py` 生成与实时一致的训练特征
-3. **模型训练与部署** — 导出 TorchScript 或 `.py` 插件，通过 `build_fall_predictor()` 接入
-4. **ML 推理线程化** — 将 Torch 推理移到独立线程，避免阻塞 GUI
-5. **多人扩展** — 将 `target_tracking.py` 扩展为多目标跟踪器
-6. **模型参与报警策略** — 在规则法基础上叠加模型置信度作为联合决策
+如果沿着当前架构继续推进，最自然的方向是：
+
+1. **补全真实 `.bin` 回放链**
+   - 让离线数据能驱动实时 GUI
+
+2. **继续打磨离线数据规范**
+   - 统一标注命名
+   - 统一 clip 切分方式
+
+3. **完善模型产物规范**
+   - 让训练、打包、部署的 `model_meta.json` 约束更稳定
+
+4. **评估多人扩展**
+   - 当前如果要上多人场景，需要从 tracker 开始重新设计
+
+5. **继续分离“实时产品逻辑”和“研究逻辑”**
+   - 当前仓库已经做了大量收敛，后面继续保持这种边界会更好维护
+
+---
+
+## 总结
+
+当前这个仓库已经形成了一条很明确的闭环：
+
+- 实时侧：`RD / RA / RE + 当前帧点云 + 单目标跟踪 + ML 告警`
+- 离线侧：`.bin -> 特征 -> manifest -> 训练 -> 打包`
+- 中间靠：`Radar.cfg + model_meta.json` 做契约绑定
+
+如果你的目标是“用离线 `.bin` 训练一个模型，再把它稳定挂回实时 GUI”，当前结构已经足够作为后续工作的稳固基础。

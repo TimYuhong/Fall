@@ -1,5 +1,9 @@
 # 实时跌倒检测链路
 
+> **版本日期**: 2026-03-24  
+> **适用范围**: 当前仓库里的实时主链路说明  
+> **补充阅读**: [README.md](README.md), [PROJECT_DOC.md](PROJECT_DOC.md)
+
 ## 结论
 
 当前实现已经是 **ML 主导的实时跌倒检测**：
@@ -66,6 +70,8 @@ flowchart TD
   - 雷达未启动
   - 启动失败
 - 只要雷达成功 `sensorStart` 且 worker 正常启动，首页就会自动切到监测态
+- 如果模型未加载，或模型契约校验失败，首页不会因此退回 `Standby`，而是继续显示监测相关状态，同时附带：
+  - `ML disabled`
 
 ## 2. 原始数据采集与特征生成
 
@@ -253,6 +259,17 @@ flowchart TD
 
 - 先积满 100 帧再出首个结果
 - 之后每 10 帧更新一次新推理结果
+
+### 当前支持的模型工件
+
+实时界面当前支持加载：
+
+- `*.pth`
+  - 走 `runtime.raca_predictor.RACAfallPredictor`
+- `*.pt / *.jit / *.ts`
+  - 走通用 TorchScript 包装器
+- `*.py`
+  - 走自定义 predictor 插件入口
 
 ### 模型契约
 
