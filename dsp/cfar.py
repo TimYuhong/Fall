@@ -33,8 +33,8 @@ def ca(x, *argv, **kwargs):
 
     Args:
         x (~numpy.ndarray): Signal.
-        *argv: See mmwave.dsp.cfar.ca\_
-        **kwargs: See mmwave.dsp.cfar.ca\_
+        *argv: See mmwave.dsp.cfar.ca\\_
+        **kwargs: See mmwave.dsp.cfar.ca\\_
 
     Returns:
         ~numpy.ndarray: Boolean array of detected peaks in x.
@@ -117,8 +117,8 @@ def caso(x, *argv, **kwargs):
 
     Args:
         x (~numpy.ndarray): Signal.
-        *argv: See mmwave.dsp.cfar.caso\_
-        **kwargs: See mmwave.dsp.cfar.caso\_
+        *argv: See mmwave.dsp.cfar.caso\\_
+        **kwargs: See mmwave.dsp.cfar.caso\\_
 
     Returns:
         ~numpy.ndarray: Boolean array of detected peaks in x.
@@ -210,8 +210,8 @@ def cago(x, *argv, **kwargs):
 
     Args:
         x (~numpy.ndarray): Signal.
-        *argv: See mmwave.dsp.cfar.cago\_
-        **kwargs: See mmwave.dsp.cfar.cago\_
+        *argv: See mmwave.dsp.cfar.cago\\_
+        **kwargs: See mmwave.dsp.cfar.cago\\_
 
     Returns:
         ~numpy.ndarray: Boolean array of detected peaks in x.
@@ -303,8 +303,8 @@ def os(x, *argv, **kwargs):
 
     Args:
         x (~numpy.ndarray): Noisy array to perform cfar on with log values
-        *argv: See mmwave.dsp.cfar.os\_
-        **kwargs: See mmwave.dsp.cfar.os\_
+        *argv: See mmwave.dsp.cfar.os\\_
+        **kwargs: See mmwave.dsp.cfar.os\\_
 
 
     Returns:

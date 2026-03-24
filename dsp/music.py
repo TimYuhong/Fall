@@ -18,7 +18,7 @@ def aoa_music_1D(steering_vec, rx_chirps, num_sources):
     
     Current implementation assumes covariance matrix is not rank deficient and ULA spacing is half of the wavelength.
     .. math::
-        P_{} (\\theta) = \\frac{1}{a^{H}(\\theta) \mathbf{E}_\mathrm{n}\mathbf{E}_\mathrm{n}^H a(\\theta)}
+        P_{} (\\theta) = \\frac{1}{a^{H}(\\theta) \\mathbf{E}_\\mathrm{n}\\mathbf{E}_\\mathrm{n}^H a(\\theta)}
     where :math:`E_{n}` is the noise subpace and :math:`a` is the steering vector.
     
 

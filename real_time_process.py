@@ -21,7 +21,10 @@ range_bins = 128
 frame_length = adc_sample * chirp * tx_num * rx_num * IQ_CHANNEL
 range_angle_padding_size = [range_bins, 64, 64]
 
-dll = cdll.LoadLibrary('libs/UDPCAPTUREADCRAWDATA.dll')
+try:
+    dll = cdll.LoadLibrary('libs/UDPCAPTUREADCRAWDATA.dll')
+except OSError:
+    dll = None
 POINTCLOUD_DEBUG_LOGS = str(os.environ.get("RADAR_DEBUG_POINTCLOUD", "0")).strip().lower() in {
     "1",
     "true",
@@ -75,6 +78,11 @@ class UdpListener(th.Thread):
 
     def run(self):
         global a_ctypes_ptr, b_ctypes_ptr
+        if dll is None:
+            raise RuntimeError(
+                "UDPCAPTUREADCRAWDATA.dll could not be loaded. "
+                "Real-time UDP capture requires Windows with the DLL present in libs/."
+            )
         dll.captureudp(a_ctypes_ptr, b_ctypes_ptr, self.frame_length)
 
 
