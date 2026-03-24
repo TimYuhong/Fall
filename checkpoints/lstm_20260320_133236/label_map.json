@@ -1,0 +1,16 @@
+{
+  "label_map": {
+    "fall": 1,
+    "non_fall": 0,
+    "sit": 0,
+    "squat": 0,
+    "stand": 0,
+    "waist": 0,
+    "walk": 0
+  },
+  "class_names": [
+    "non-fall",
+    "fall"
+  ],
+  "binary_mode": true
+}

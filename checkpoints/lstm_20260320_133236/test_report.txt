@@ -1,0 +1,32 @@
+best model: checkpoints/lstm_20260320_133236/raca_v2_best.pth
+best val score: 0.9517  f1: 0.914  acc: 93.1%
+best epoch: 18
+
+=== Val Report (best model) ===
+              precision    recall  f1-score   support
+
+    non-fall       1.00      0.91      0.95        66
+        fall       0.78      1.00      0.88        21
+
+    accuracy                           0.93        87
+   macro avg       0.89      0.95      0.91        87
+weighted avg       0.95      0.93      0.93        87
+
+Val Confusion Matrix:
+[[60  6]
+ [ 0 21]]
+
+=== Test Report (best model) ===
+Test Accuracy: 92.0%
+              precision    recall  f1-score   support
+
+    non-fall       0.94      0.96      0.95        67
+        fall       0.85      0.81      0.83        21
+
+    accuracy                           0.92        88
+   macro avg       0.90      0.88      0.89        88
+weighted avg       0.92      0.92      0.92        88
+
+Test Confusion Matrix:
+[[64  3]
+ [ 4 17]]

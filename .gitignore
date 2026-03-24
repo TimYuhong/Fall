@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+
+# Test / coverage
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache/
+.hypothesis/
+.pytest_cache/
+
+# Virtual env
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project outputs
+build_exe/
+*.toc
+*.pkg
+warn-*.txt
+xref-*.html
+logs/
+tmp/
+temp/
+
+# Data
+dataset/
+data/
+
+# ML models
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.onnx
+
+# Local env / secrets
+.env
+.env.*
+*.local
+
+# Generated tool outputs
+tools/output.gif
+tools/output_cfar.gif
+tools/output_cfar.png
+tools/test_output.png
+
+# Optional: ignore platform binaries
+libs/
+firmware/
